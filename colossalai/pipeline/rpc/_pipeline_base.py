@@ -493,9 +493,14 @@ class WorkerBase(ABC):
             # take tensor only (for only tensor can do backward)
             stage_outputs = pytree_filter(lambda x: x.requires_grad, stage_outputs, process_types=torch.Tensor)
             grad_tensors = pytree_filter(lambda x: x is not None, grad_tensors, process_types=torch.Tensor)
+            
+            if not grad_tensors is None:
+                real_out_len = len(grad_tensors)
+                if not isinstance(stage_outputs, torch.Tensor) and  len(grad_tensors) < len(stage_outputs):
+                    stage_outputs = stage_outputs[:real_out_len]
 
             autograd.backward(stage_outputs, grad_tensors=grad_tensors)
-
+            
             # collect grad of input tensor
             consume_result = []
             if not is_first_stage:
@@ -815,7 +820,7 @@ class PipelineEngineBase(ABC, nn.Module):
                 self._set_labels(output_pp_ranks, microbatch_id, microlabels)
 
             # get data asynchronously
-            self._subscribe_forward(microbatch_id, output_pp_ranks, ret_future)
+            self._subscribe_forward(microbatch_id, output_pp_ranks, ret_future) #TODO it this a comsumer which should be added to ref_count?
 
         # wait for first rank to ensure all backwards are done
         self._ensure_backward(forward_only, input_pp_ranks)
