@@ -148,14 +148,39 @@ def split_module(
                 if def_partition_name is not None:
                     use_partition.partitions_dependent_on.setdefault(def_partition_name)
 
+    def record_output(
+        def_node: torch.fx.node.Node, use_node: Optional[torch.fx.node.Node]
+    ):  # noqa: B950
+        def_partition_name = getattr(def_node, "_fx_partition", None)
+        use_partition_name = getattr(use_node, "_fx_partition", None)
+        if def_partition_name != use_partition_name:
+            if def_partition_name is not None:
+                def_partition = partitions[def_partition_name]
+                def_partition.outputs.setdefault(def_node.name)
+                if use_partition_name is not None:
+                    def_partition.partition_dependents.setdefault(use_partition_name)
+
+            if use_partition_name is not None:
+                use_partition = partitions[use_partition_name]
+                use_partition.inputs.setdefault(def_node.name)
+                if def_partition_name is not None:
+                    use_partition.partitions_dependent_on.setdefault(def_partition_name)
+            use_partition.outputs.setdefault(def_node.name)
+        else:
+            if use_partition_name is not None:
+                use_partition = partitions[use_partition_name]
+                use_partition.outputs.setdefault(def_node.name)
+    
     # split nodes into parititons
     for node in m.graph.nodes:
         orig_nodes[node.name] = node
 
         if node.op in ["placeholder"]:
             continue
+        
         if node.op == 'output':
-            torch.fx.graph.map_arg(node.args[0], lambda n: record_cross_partition_use(n, None))
+            # output must not be the only node in a stage, which should be ensured by split func.
+            torch.fx.graph.map_arg(node.args[0], lambda n: record_output(n, node.prev))
             continue
         partition_name = str(split_callback(node))
 
@@ -169,7 +194,7 @@ def split_module(
 
         torch.fx.graph.map_arg(node.args, lambda def_node: record_cross_partition_use(def_node, node))
         torch.fx.graph.map_arg(node.kwargs, lambda def_node: record_cross_partition_use(def_node, node))    # noqa: B950
-
+        
     # find partitions with no dependencies
     root_partitions: List[str] = []
     for partition_name, partition in partitions.items():
@@ -235,10 +260,10 @@ def split_module(
     for node in m.graph.nodes:
         if node.op == 'placeholder':
             if version.parse(torch.__version__) < version.parse('1.11.0'):
-                base_mod_env[node.name] = base_mod_graph.placeholder(node.name, type_expr=node.type)
+                base_mod_env[node.name] = base_mod_graph.placeholder(node.target, type_expr=node.type)
             else:
                 default_value = node.args[0] if len(node.args) > 0 else inspect.Signature.empty
-                base_mod_env[node.name] = base_mod_graph.placeholder(node.name,
+                base_mod_env[node.name] = base_mod_graph.placeholder(node.target,
                                                                      type_expr=node.type,
                                                                      default_value=default_value)
             base_mod_env[node.name].meta = node.meta.copy()
